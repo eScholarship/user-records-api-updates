@@ -1,6 +1,7 @@
 .DS_Store
 Profile importer tool test
 Bulk_Profile_Test_File.csv
+Bulk_Profile_Test_2.csv
 creds.py
 .idea/
 __pycache__/
