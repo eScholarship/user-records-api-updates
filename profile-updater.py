@@ -6,9 +6,7 @@ import creds
 from pprint import pprint
 import xml.etree.ElementTree as ET
 import requests
-
-
-# from xml.etree.ElementTree import Element, SubElement, Comment, tostring
+from time import sleep
 
 
 # -----------------------------
@@ -92,25 +90,24 @@ def create_xml_bodies(ud):
     for row in ud:
 
         # We need the record ID to update the record.
-        # TK TK -- new hires may not have records? Discuss.
+        # TK TK -- new hires may not have records? And may need PUT rather than PATCH? Discuss.
         if "user_record_id" not in row.keys(): continue
 
-        # XML root
-        root = ET.Element('update-record')
-        root.set("xmlns", "http://www.symplectic.co.uk/publications/api")
-
-        # Fields subnode
+        # XML root <update-record> and child node <fields>
+        root = ET.Element('update-record', xmlns="http://www.symplectic.co.uk/publications/api")
         fields = ET.SubElement(root, "fields")
 
-        # The column names in the CSV to update for users
+        # The columns in the CSV to update for users
         update_fields = [
             'overview',
             'research-interests',
             'teaching-summary'
         ]
 
+        # Create an XML node for each of the user's non-empty fields
         for field_name in update_fields:
             if row[field_name] != "":
+                # Params: parent, tag name, name attribute, operation attribute, text content.
                 add_subnode(fields, "field", field_name, "set", row[field_name])
 
         # Convert XML object to string.
@@ -140,7 +137,7 @@ test_records = [
 			                <text>Updated from Python --> API</text>
 		                </field>
 		                <field name="research-interests" operation="set">
-			                <text>Also Updated from Python --> API</text>
+			                <text>Also Updated from Python --> yah yah yah changed</text>
 		                </field>
 	            </fields>
             </update-record>"""
@@ -154,41 +151,41 @@ def update_records_via_api(ud):
     # Load creds
     api_creds = creds.api_creds
 
-
-    for update_dict in test_records:
-
-        # Configure the req and send it
-        # req_url = api_creds['endpoint']
-        # response = requests.get(req_url, auth=(api_creds['username'], api_creds['password']))
+    # Loop the user update dicts
+    for user_dict in test_records:
 
         # Append the user record URL to the endpoint
-        req_url = api_creds['endpoint'] + "user/records/manual/" + update_dict['user_record_id']
+        req_url = api_creds['endpoint'] + "user/records/manual/" + user_dict['user_record_id']
 
         # Content type header is required when sending XML to Elements' API.
         headers = {'Content-Type': 'text/xml'}
 
+        # Send the http request
         response = requests.patch(req_url,
-                                  data=update_dict['xml'],
                                   headers=headers,
+                                  data=user_dict['xml'],
                                   auth=(api_creds['username'], api_creds['password']))
 
-        # Get the response
-        pprint(response.status_code)
-        pprint(response.headers['content-type'])
-        pprint(response.encoding)
-        pprint(response.text)
+        # If something went wrong, print the details.
+        if response.status_code != 200:
+            print("\nNon-200 status code received:")
+            pprint(response.status_code)
+            pprint(response.headers['content-type'])
+            pprint(response.text)
+
+        # Half-second throttle to keep the API happy
+        sleep(0.5)
 
 
-# ==========================
+# ========================================
 # MAIN PROGRAM
 
 # TK eventually set with args
 ssh_tunnel_needed = True
 
-# Open a tunnel if needed
+# Open SSH tunnel if needed
 if ssh_tunnel_needed:
     from sshtunnel import SSHTunnelForwarder
-
     server = SSHTunnelForwarder(
         creds.ssh_creds['host'],
         ssh_username=creds.ssh_creds['username'],
@@ -202,16 +199,18 @@ if ssh_tunnel_needed:
 updates_dict = convert_update_csv("Bulk_Profile_Test_File.csv")
 
 # Reporting DB: Add the user record IDs to the dict
-updates_dict = retrieve_user_record_ids(updates_dict)
+# updates_dict = retrieve_user_record_ids(updates_dict)
+retrieve_user_record_ids(updates_dict)
 
 # Adds the xml bodies for the update procedure
-update_dict = create_xml_bodies(updates_dict)
+# update_dict = create_xml_bodies(updates_dict)
+create_xml_bodies(updates_dict)
 
-pprint(update_dict)
+# Send updates to the API
+update_records_via_api(updates_dict)
 
-## TK TK pick up here -- loop through dicts, send the API query with xml bodies.
-update_records_via_api(update_dict)
-
-# Close tunnel if needed
+# Close SSH tunnel if needed
 if ssh_tunnel_needed:
     server.stop()
+
+print("Program complete. Exiting.")
