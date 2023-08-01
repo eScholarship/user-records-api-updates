@@ -1,8 +1,7 @@
-from csv import DictReader
-
-# https://github.com/mkleehammer/pyodbc/wiki
-import pyodbc
 import creds
+
+from csv import DictReader
+import pyodbc
 from pprint import pprint
 import xml.etree.ElementTree as ET
 import requests
@@ -12,7 +11,7 @@ from time import sleep
 # -----------------------------
 def convert_update_csv(csv):
     print("Converting CSV to python dict.")
-    with open("Bulk_Profile_Test_File.csv", encoding='windows-1252') as f:
+    with open(csv, encoding='windows-1252') as f:
         return list(DictReader(f))
 
 
@@ -20,22 +19,13 @@ def convert_update_csv(csv):
 def retrieve_user_record_ids(ud):
     print("Retrieving user record IDs from the Reporting DB.")
 
-    # Load SQL creds and driver
-    if ssh_tunnel_needed:
-        sql_creds = creds.sql_creds_local
-        sql_driver = '{ODBC Driver 18 for SQL Server}'
-    else:
-        sql_creds = creds.sql_creds_server
-        sql_driver = '{ODBC Driver 17 for SQL Server}'
-
     # Open the SQL file
     try:
         sql_file = open("user_records_query.sql")
         sql_query = sql_file.read()
     except:
         raise Exception(
-            "ERROR WHILE HANDLING SQL FILE. The file was unable to be located, or a problem occurred while reading its "
-            "contents.")
+            "ERROR WHILE LOADING/READING THE SQL FILE.")
 
     # Create the list of proprietary IDs
     prop_id_list = ",\n".join(["'" + item['user_proprietary_id'] + "'" for item in ud])
@@ -51,7 +41,7 @@ def retrieve_user_record_ids(ud):
             pwd=sql_creds['password'],
             trustservercertificate='yes')
     except:
-        raise Exception("ERROR CONNECTING TO DATABASE. Check credits and/or SSH tunneling.")
+        raise Exception("ERROR CONNECTING TO DATABASE.")
 
     # Create cursor, execute query
     cursor = conn.cursor()
@@ -74,24 +64,31 @@ def retrieve_user_record_ids(ud):
     cursor.close()
     conn.close()
 
-    return ud
-
 
 # -----------------------------
 def create_xml_bodies(ud):
     print("Creating XML bodies for user record updates via API.")
 
-    # Quick function for adding xml subnodes.
-    # Subnodes require at least a parent and a tag.
-    def add_subnode(parent, tag, n, o, t):
-        ET.SubElement(parent, tag, name=n, operation=o).text = t
+    # Body XML format hierarchy should be:
+    #
+    # <update-record>
+    #   <fields>
+    #       <field>
+    #           <text>abc</text>
+    #       </field>
+    #       <field>
+    #           <text>xyz</text>
+    #       </field>
+    #   </fields>
+    # </update-record>
 
     # Main XML function
     for row in ud:
 
         # We need the record ID to update the record.
-        # TK TK -- new hires may not have records? And may need PUT rather than PATCH? Discuss.
-        if "user_record_id" not in row.keys(): continue
+        # TK TK -- new hires may not have records? And may need PUT rather than PATCH? Discuss!
+        if "user_record_id" not in row.keys():
+            continue
 
         # XML root <update-record> and child node <fields>
         root = ET.Element('update-record', xmlns="http://www.symplectic.co.uk/publications/api")
@@ -107,52 +104,19 @@ def create_xml_bodies(ud):
         # Create an XML node for each of the user's non-empty fields
         for field_name in update_fields:
             if row[field_name] != "":
-                # Params: parent, tag name, name attribute, operation attribute, text content.
-                add_subnode(fields, "field", field_name, "set", row[field_name])
+                field = ET.SubElement(fields, "field", name=field_name, operation="set")
+                ET.SubElement(field, "text").text = row[field_name]
 
         # Convert XML object to string.
         row["xml"] = ET.tostring(root)
 
-    return ud
-
 
 # -----------------------------
-
-test_records = [
-    {
-        'mobile-phone': '',
-        'mobile-phone-ext': '',
-        'overview': 'OVERVIEW CHANGED!!!',
-        'personal-email': '',
-        'research-interests': 'RESEARCH INTERESTS CHANGED!!!',
-        'teaching-summary': '',
-        'user_id': 279757,
-        'user_proprietary_id': 'devin.smith@ucop.edu',
-        'user_record_id': 'F66983DD-9932-452C-8409-746A939922E4',
-        'work-email': 'devin,smith@ucop.edu',
-        'work-phone-ext': '',
-        'xml': """<update-record xmlns="http://www.symplectic.co.uk/publications/api">
-	                <fields>
-		                <field name="overview" operation="set">
-			                <text>Updated from Python --> API</text>
-		                </field>
-		                <field name="research-interests" operation="set">
-			                <text>Also Updated from Python --> yah yah yah changed</text>
-		                </field>
-	            </fields>
-            </update-record>"""
-    }
-]
-
-
 def update_records_via_api(ud):
-    print("Sending update requests to API.")
-
-    # Load creds
-    api_creds = creds.api_creds
+    print("Sending update requests to API...")
 
     # Loop the user update dicts
-    for user_dict in test_records:
+    for user_dict in ud:
 
         # Append the user record URL to the endpoint
         req_url = api_creds['endpoint'] + "user/records/manual/" + user_dict['user_record_id']
@@ -166,8 +130,14 @@ def update_records_via_api(ud):
                                   data=user_dict['xml'],
                                   auth=(api_creds['username'], api_creds['password']))
 
-        # If something went wrong, print the details.
-        if response.status_code != 200:
+        # Report on updates
+        if response.status_code == 200:
+            print("\nSuccessful update: ")
+            print("  User ID:", user_dict['user_id'])
+            print("  User Prop. ID:", user_dict['user_proprietary_id'])
+            print("  User Record ID:", user_dict['user_record_id'])
+
+        else:
             print("\nNon-200 status code received:")
             pprint(response.status_code)
             pprint(response.headers['content-type'])
@@ -181,29 +151,50 @@ def update_records_via_api(ud):
 # MAIN PROGRAM
 
 # TK eventually set with args
+qa_mode = True
 ssh_tunnel_needed = True
+
+# Loads appropriate creds based on the above flags
+if qa_mode:
+    ssh_creds = creds.ssh_creds_qa
+    api_creds = creds.api_creds_qa
+    if ssh_tunnel_needed:
+        sql_creds = creds.sql_creds_local_qa
+        sql_driver = '{ODBC Driver 18 for SQL Server}'
+    else:
+        sql_creds = creds.sql_creds_server_qa
+        sql_driver = '{ODBC Driver 17 for SQL Server}'
+else:
+    ssh_creds = creds.ssh_creds
+    api_creds = creds.api_creds
+    if ssh_tunnel_needed:
+        sql_creds = creds.sql_creds_local
+        sql_driver = '{ODBC Driver 18 for SQL Server}'
+    else:
+        sql_creds = creds.sql_creds_server
+        sql_driver = '{ODBC Driver 17 for SQL Server}'
 
 # Open SSH tunnel if needed
 if ssh_tunnel_needed:
+    print("Opening SSH tunnel.")
     from sshtunnel import SSHTunnelForwarder
+
     server = SSHTunnelForwarder(
-        creds.ssh_creds['host'],
-        ssh_username=creds.ssh_creds['username'],
-        ssh_password=creds.ssh_creds['password'],
-        remote_bind_address=creds.ssh_creds['remote'],
-        local_bind_address=creds.ssh_creds['local'])
+        ssh_creds['host'],
+        ssh_username=ssh_creds['username'],
+        ssh_password=ssh_creds['password'],
+        remote_bind_address=ssh_creds['remote'],
+        local_bind_address=ssh_creds['local'])
 
     server.start()
 
 # Convert the CSV to dict.
-updates_dict = convert_update_csv("Bulk_Profile_Test_File.csv")
+updates_dict = convert_update_csv("Bulk_Profile_Test_2.csv")
 
 # Reporting DB: Add the user record IDs to the dict
-# updates_dict = retrieve_user_record_ids(updates_dict)
 retrieve_user_record_ids(updates_dict)
 
 # Adds the xml bodies for the update procedure
-# update_dict = create_xml_bodies(updates_dict)
 create_xml_bodies(updates_dict)
 
 # Send updates to the API
