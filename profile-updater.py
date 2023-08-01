@@ -13,12 +13,14 @@ import requests
 
 # -----------------------------
 def convert_update_csv(csv):
+    print("Converting CSV to python dict.")
     with open("Bulk_Profile_Test_File.csv", encoding='windows-1252') as f:
         return list(DictReader(f))
 
 
 # -----------------------------
 def retrieve_user_record_ids(ud):
+    print("Retrieving user record IDs from the Reporting DB.")
 
     # Load SQL creds and driver
     if ssh_tunnel_needed:
@@ -79,6 +81,7 @@ def retrieve_user_record_ids(ud):
 
 # -----------------------------
 def create_xml_bodies(ud):
+    print("Creating XML bodies for user record updates via API.")
 
     # Quick function for adding xml subnodes.
     # Subnodes require at least a parent and a tag.
@@ -116,12 +119,73 @@ def create_xml_bodies(ud):
     return ud
 
 
+# -----------------------------
+
+test_records = [
+    {
+        'mobile-phone': '',
+        'mobile-phone-ext': '',
+        'overview': 'OVERVIEW CHANGED!!!',
+        'personal-email': '',
+        'research-interests': 'RESEARCH INTERESTS CHANGED!!!',
+        'teaching-summary': '',
+        'user_id': 279757,
+        'user_proprietary_id': 'devin.smith@ucop.edu',
+        'user_record_id': 'F66983DD-9932-452C-8409-746A939922E4',
+        'work-email': 'devin,smith@ucop.edu',
+        'work-phone-ext': '',
+        'xml': """<update-record xmlns="http://www.symplectic.co.uk/publications/api">
+	                <fields>
+		                <field name="overview" operation="set">
+			                <text>Updated from Python --> API</text>
+		                </field>
+		                <field name="research-interests" operation="set">
+			                <text>Also Updated from Python --> API</text>
+		                </field>
+	            </fields>
+            </update-record>"""
+    }
+]
+
+
+def update_records_via_api(ud):
+    print("Sending update requests to API.")
+
+    # Load creds
+    api_creds = creds.api_creds
+
+
+    for update_dict in test_records:
+
+        # Configure the req and send it
+        # req_url = api_creds['endpoint']
+        # response = requests.get(req_url, auth=(api_creds['username'], api_creds['password']))
+
+        # Append the user record URL to the endpoint
+        req_url = api_creds['endpoint'] + "user/records/manual/" + update_dict['user_record_id']
+
+        # Content type header is required when sending XML to Elements' API.
+        headers = {'Content-Type': 'text/xml'}
+
+        response = requests.patch(req_url,
+                                  data=update_dict['xml'],
+                                  headers=headers,
+                                  auth=(api_creds['username'], api_creds['password']))
+
+        # Get the response
+        pprint(response.status_code)
+        pprint(response.headers['content-type'])
+        pprint(response.encoding)
+        pprint(response.text)
+
+
 # ==========================
 # MAIN PROGRAM
 
 # TK eventually set with args
 ssh_tunnel_needed = True
 
+# Open a tunnel if needed
 if ssh_tunnel_needed:
     from sshtunnel import SSHTunnelForwarder
 
@@ -146,7 +210,8 @@ update_dict = create_xml_bodies(updates_dict)
 pprint(update_dict)
 
 ## TK TK pick up here -- loop through dicts, send the API query with xml bodies.
+update_records_via_api(update_dict)
 
-
+# Close tunnel if needed
 if ssh_tunnel_needed:
     server.stop()
