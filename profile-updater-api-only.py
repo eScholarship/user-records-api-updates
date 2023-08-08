@@ -40,7 +40,7 @@ def get_namespace_object():
 def retrieve_user_record_ids(ud):
     # ---------- Error text if record(s) not found.
     def print_error(prop_id):
-        print("\nWARNING: A user in the CSV does not have an ID or manual user record in Elements."
+        print("\nWARNING: A user in the CSV does not have a User ID or manual user record in Elements."
               "This likely indicates they are a new user. They will be skipped for now -- "
               "We believe the Elements User ID and manual record are created "
               "either manually or when a user's HR feed entry is imported.")
@@ -82,7 +82,7 @@ def retrieve_user_record_ids(ud):
         user_dict['user_record_id'] = record_id_element.attrib['id-at-source']
 
         # Pause for the API.
-        sleep(0.25)
+        sleep(0.5)
 
     # Return the filtered set
     return [user_dict for user_dict in ud if user_dict is not None]
