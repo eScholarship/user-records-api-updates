@@ -37,49 +37,16 @@ def get_namespace_object():
     return ns
 
 
-# -----------------------------
-def retrieve_user_ids(ud):
-    print("Getting User IDs...")
-
-    # Get the namespaces
-    ns = get_namespace_object()
-
-    # Loop the user update dicts
-    for index, user_dict in enumerate(ud, 0):
-
-        # Append the user's proprietary ID URL to the endpoint
-        # Send the http request
-        # Load response XML into Element Tree
-        req_url = api_creds['endpoint'] + "users?proprietary-id=" + user_dict['user_proprietary_id']
-        response = requests.get(req_url, auth=(api_creds['username'], api_creds['password']))
-        root = ET.fromstring(response.text)
-
-        # Locate the API object with the user ID
-        id_xpath = 'feed:entry/api:object'
-        user_id_element = root.find(id_xpath, ns)
-
-        # If the user doesn't have an Elements ID, warn, empty the dict, and continue
-        if user_id_element is None:
-            print("\nWARNING: A user in the CSV does not have a 'User ID' in Elements."
-                  "This likely indicates they are a new user. They will be skipped "
-                  "for now -- We believe the Elements User ID and manual record are "
-                  "created either manually or when a user's HR feed entry is imported.")
-            print("user_proprietary_id:", user_dict['user_proprietary_id'])
-            ud[index] = None
-            continue
-
-        # Add the user ID to the dict. Note: this is a STRING.
-        user_dict['user_id'] = user_id_element.attrib['id']
-
-        # Pause for the API.
-        sleep(0.25)
-
-    # Return the filtered set
-    return [user_dict for user_dict in ud if user_dict is not None]
-
-
-# -----------------------------
 def retrieve_user_record_ids(ud):
+    # ---------- Error text if record(s) not found.
+    def print_error(prop_id):
+        print("\nWARNING: A user in the CSV does not have a User ID or manual user record in Elements."
+              "This likely indicates they are a new user. They will be skipped for now -- "
+              "We believe the Elements User ID and manual record are created "
+              "either manually or when a user's HR feed entry is imported.")
+        print("user_proprietary_id:", prop_id)
+
+    # ---------- Function
     print("Getting User Record IDs...")
 
     # Get the namespaces
@@ -88,33 +55,34 @@ def retrieve_user_record_ids(ud):
     # Loop the user update dicts
     for index, user_dict in enumerate(ud, 0):
 
-        # Append the user ID to the endpoint URL
-        # Send the http request
-        # Load response XML into Element Tree
-        req_url = api_creds['endpoint'] + "users/" + user_dict['user_id']
+        # Append the user ID to the endpoint URL and send the http request
+        req_url = api_creds['endpoint'] + "users/pid-" + user_dict['user_proprietary_id']
         response = requests.get(req_url, auth=(api_creds['username'], api_creds['password']))
+
+        # Skip if the user doesn't have a manual record ID
+        if response.status_code != 200:
+            print_error(user_dict['user_proprietary_id'])
+            ud[index] = None
+            continue
+
+        # Load response XML into Element Tree
         root = ET.fromstring(response.text)
 
         # Locate the URL element, get the User ID
-        record_id_xpath = 'feed:entry/api:object/api:records/api:record'
+        record_id_xpath = 'feed:entry/api:object/api:records/api:record[@format="native"]'
         record_id_element = root.find(record_id_xpath, ns)
-        record_id = record_id_element.attrib['id-at-source']
 
-        # If the user doesn't have a manual record ID, something has gone wrong
-        if record_id is None:
-            print("\nWARNING: A user in the CSV does not have a 'Manual User Record' in Elements."
-                  "This likely indicates they are a new user. They will be skipped "
-                  "for now -- We believe the Elements User ID and manual record are "
-                  "created either manually or when a user's HR feed entry is imported.")
-            print("user_proprietary_id:", user_dict['user_proprietary_id'])
+        # Skip if no "native" records are found
+        if record_id_element is None:
+            print_error(user_dict['user_proprietary_id'])
             ud[index] = None
             continue
 
         # Add the record id to the user dict
-        user_dict['user_record_id'] = record_id
+        user_dict['user_record_id'] = record_id_element.attrib['id-at-source']
 
         # Pause for the API.
-        sleep(0.25)
+        sleep(0.5)
 
     # Return the filtered set
     return [user_dict for user_dict in ud if user_dict is not None]
@@ -183,8 +151,7 @@ def update_records_via_api(ud):
         # Report on updates
         if response.status_code == 200:
             print("\nSuccessful update: ")
-            print("  User ID:", user_dict['user_id'])
-            print("  User Prop. ID:", user_dict['user_proprietary_id'])
+            print("  User Proprietary ID:", user_dict['user_proprietary_id'])
             print("  User Record ID:", user_dict['user_record_id'])
 
         else:
@@ -242,19 +209,18 @@ if ssh_tunnel_needed:
     server.start()
 
 # Convert the CSV to dict.
-updates_dict = convert_update_csv("Bulk_Profile_Test_2.csv")
+update_dicts = convert_update_csv("Bulk_Profile_Test_2.csv")
 
 # Loop the dict, and ping the APIs for user IDs and user record IDs
 # These functions also strip any users who don't have these values
 # in the API. (Likely means they're new users.)
-updates_dict = retrieve_user_ids(updates_dict)
-updates_dict = retrieve_user_record_ids(updates_dict)
+update_dicts = retrieve_user_record_ids(update_dicts)
 
 # Adds the xml bodies for the update procedure
-create_xml_bodies(updates_dict)
+create_xml_bodies(update_dicts)
 
 # Send updates to the API
-update_records_via_api(updates_dict)
+update_records_via_api(update_dicts)
 
 # Close SSH tunnel if needed
 if ssh_tunnel_needed:
