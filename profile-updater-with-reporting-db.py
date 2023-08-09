@@ -1,10 +1,8 @@
 # This version of the profile importer uses both the API and Reporting DB
-
 # NOTE! This program is designed for Elements API v 5.5
 # Modifications may need to be made if we've updated to a newer version.
 
-import creds
-
+import argparse
 from csv import DictReader
 import pyodbc
 from pprint import pprint
@@ -12,16 +10,122 @@ import xml.etree.ElementTree as ET
 import requests
 from time import sleep
 
+# Creds file
+# This script requires a "creds.py" in its directory.
+# See "creds_template.py" for the required format.
+import creds
+
+# -----------------------------
+# Arguments
+parser = argparse.ArgumentParser()
+
+parser.add_argument("-i", "--input",
+                    dest="csv_file",
+                    type=str,
+                    help="REQUIRED. The CSV file to process.")
+
+parser.add_argument("-c", "--connection",
+                    dest="connection",
+                    type=str.lower,
+                    help="REQUIRED. Specify ONLY 'qa' or 'production'")
+
+parser.add_argument("-t", "--tunnel",
+                    dest="tunnel_needed",
+                    action="store_true",
+                    default=False,
+                    help="Optional. Include to run the connection through a tunnel.")
+
+args = parser.parse_args()
+
+
+# ========================================
+def main():
+
+    # Validate args
+    if (args.csv_file is not None) and (args.connection == 'qa' or args.connection == 'production'):
+        pass
+    else:
+        print("Invalid arguments provided. See here:")
+        print(parser.print_help())
+        exit(0)
+
+    # Loads creds based on the above flags
+    # --------- QA
+    if args.connection == 'qa':
+        ssh_creds = creds.ssh_creds_qa
+        api_creds = creds.api_creds_qa
+        if args.tunnel_needed:
+            sql_creds = creds.sql_creds_local_qa
+            sql_driver = '{ODBC Driver 18 for SQL Server}'
+        else:
+            sql_creds = creds.sql_creds_server_qa
+            sql_driver = '{ODBC Driver 17 for SQL Server}'
+
+    # --------- PROD
+    else:
+        ssh_creds = creds.ssh_creds_prod
+        api_creds = creds.api_creds_prod
+        if args.tunnel_needed:
+            sql_creds = creds.sql_creds_local_prod
+            sql_driver = '{ODBC Driver 18 for SQL Server}'
+        else:
+            sql_creds = creds.sql_creds_server_prod
+            sql_driver = '{ODBC Driver 17 for SQL Server}'
+
+    # Open SSH tunnel if needed
+    if args.tunnel_needed:
+        print("Opening SSH tunnel.")
+        from sshtunnel import SSHTunnelForwarder
+
+        server = SSHTunnelForwarder(
+            ssh_creds['host'],
+            ssh_username=ssh_creds['username'],
+            ssh_password=ssh_creds['password'],
+            remote_bind_address=ssh_creds['remote'],
+            local_bind_address=ssh_creds['local'])
+
+        server.start()
+
+    # Convert the CSV to dict.
+    updates_dict = convert_update_csv(args.csv_file)
+
+    # Reporting DB: Add the user record IDs to the dict,
+    # Also filters out any users not yet in the system
+    updates_dict = retrieve_user_record_ids(updates_dict, sql_creds, sql_driver)
+
+    # Adds the xml bodies for the update procedure
+    create_xml_bodies(updates_dict)
+
+    # Send updates to the API
+    update_records_via_api(updates_dict, api_creds)
+
+    # Close SSH tunnel if needed
+    if args.tunnel_needed:
+        server.stop()
+
+    print("Program complete. Exiting.")
+
+# ========================================
+
 
 # -----------------------------
 def convert_update_csv(csv):
-    print("Converting CSV to python dict.")
-    with open(csv, encoding='windows-1252') as f:
-        return list(DictReader(f))
+    print("Converting CSV to a python list of dicts.")
+
+    try:
+        with open(csv, encoding='windows-1252') as f:
+            return list(DictReader(f))
+
+    except:
+        print("\nAn error occurred while loading the specified -i --input file.\n\n"
+              "TROUBLESHOOTING: This .py script specifies the CSV encoding in "
+              "the function 'convert_update_csv'. An encoding mismatch will "
+              "trigger this error. Make sure the encodings match.")
+        exit(0)
 
 
 # -----------------------------
-def retrieve_user_record_ids(ud):
+def retrieve_user_record_ids(ud, sql_creds, sql_driver):
     print("Retrieving user record IDs from the Reporting DB.")
 
     # Open the SQL file
@@ -127,7 +231,7 @@ def create_xml_bodies(ud):
 
 
 # -----------------------------
-def update_records_via_api(ud):
+def update_records_via_api(ud, api_creds):
     print("Sending update requests to API...")
 
     # Loop the user update dicts
@@ -162,65 +266,7 @@ def update_records_via_api(ud):
         sleep(0.5)
 
 
-# ========================================
-# MAIN PROGRAM
-
-# TK eventually set with args
-qa_mode = True
-ssh_tunnel_needed = True
-
-# Loads creds based on the above flags
-# --------- QA
-if qa_mode:
-    ssh_creds = creds.ssh_creds_qa
-    api_creds = creds.api_creds_qa
-    if ssh_tunnel_needed:
-        sql_creds = creds.sql_creds_local_qa
-        sql_driver = '{ODBC Driver 18 for SQL Server}'
-    else:
-        sql_creds = creds.sql_creds_server_qa
-        sql_driver = '{ODBC Driver 17 for SQL Server}'
-
-# --------- PROD
-else:
-    ssh_creds = creds.ssh_creds
-    api_creds = creds.api_creds
-    if ssh_tunnel_needed:
-        sql_creds = creds.sql_creds_local
-        sql_driver = '{ODBC Driver 18 for SQL Server}'
-    else:
-        sql_creds = creds.sql_creds_server
-        sql_driver = '{ODBC Driver 17 for SQL Server}'
-
-# Open SSH tunnel if needed
-if ssh_tunnel_needed:
-    print("Opening SSH tunnel.")
-    from sshtunnel import SSHTunnelForwarder
-
-    server = SSHTunnelForwarder(
-        ssh_creds['host'],
-        ssh_username=ssh_creds['username'],
-        ssh_password=ssh_creds['password'],
-        remote_bind_address=ssh_creds['remote'],
-        local_bind_address=ssh_creds['local'])
-
-    server.start()
-
-# Convert the CSV to dict.
-updates_dict = convert_update_csv("Bulk_Profile_Test_2.csv")
-
-# Reporting DB: Add the user record IDs to the dict,
-# Filters for any users not yet in the system
-updates_dict = retrieve_user_record_ids(updates_dict)
-
-# Adds the xml bodies for the update procedure
-create_xml_bodies(updates_dict)
-
-# Send updates to the API
-update_records_via_api(updates_dict)
-
-# Close SSH tunnel if needed
-if ssh_tunnel_needed:
-    server.stop()
-
-print("Program complete. Exiting.")
+# -----------------------------
+# Stub for main
+if __name__ == "__main__":
+    main()
