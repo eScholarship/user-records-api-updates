@@ -1,4 +1,4 @@
-# This version of the profile importer uses both the API and Reporting DB
+# This version of the Profile Importer only uses the API.
 
 # NOTE! This program is designed for Elements API v 5.5
 # Modifications may need to be made if we've updated to a newer version.
@@ -20,67 +20,103 @@ def convert_update_csv(csv):
         return list(DictReader(f))
 
 
+def get_namespace_object():
+    # Namespace URLs
+    atom_ns = 'http://www.w3.org/2005/Atom'
+    api_ns = 'http://www.symplectic.co.uk/publications/api'
+
+    # Namespace object
+    ns = {
+        'Element': atom_ns,
+        'feed': atom_ns,
+        'entry': atom_ns,
+        'api': api_ns,
+        'records': api_ns,
+    }
+
+    return ns
+
+
 # -----------------------------
-def retrieve_user_record_ids(ud):
-    print("Retrieving user record IDs from the Reporting DB.")
+def retrieve_user_ids(ud):
+    print("Getting User IDs...")
 
-    # Open the SQL file
-    try:
-        sql_file = open("user_records_query.sql")
-        sql_query = sql_file.read()
-    except:
-        raise Exception(
-            "ERROR WHILE LOADING/READING THE SQL FILE.")
+    # Get the namespaces
+    ns = get_namespace_object()
 
-    # Create the list of proprietary IDs
-    prop_id_list = ",\n".join(["'" + item['user_proprietary_id'] + "'" for item in ud])
-    sql_query = sql_query.replace("-- REPLACE", prop_id_list)
-
-    # Connect to Elements Reporting DB
-    try:
-        conn = pyodbc.connect(
-            driver=sql_driver,
-            server=(sql_creds['server'] + ',' + sql_creds['port']),
-            database=sql_creds['database'],
-            uid=sql_creds['user'],
-            pwd=sql_creds['password'],
-            trustservercertificate='yes')
-    except:
-        raise Exception("ERROR CONNECTING TO DATABASE.")
-
-    # Create cursor, execute query
-    cursor = conn.cursor()
-    cursor.execute(sql_query)
-
-    # pyodbc doesn't have a dict-cursor option, have to do it manually
-    columns = [column[0] for column in cursor.description]
-    rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
-
-    # Re-format the dict with user Proprietary IDs as keys
-    prop_id_keys_dicts = {item["Proprietary ID"]:
-                              {'User Record ID': item["Data Source Proprietary ID"],
-                               "User ID": item["User ID"]
-                               } for item in rows}
-
-    # Loop through the user dicts.
-    # If there's no matching "Proprietary ID" in the SQL results, set to None (filters during the return)
-    # Otherwise, add the SQL results to the dict.
+    # Loop the user update dicts
     for index, user_dict in enumerate(ud, 0):
-        if user_dict["user_proprietary_id"] not in prop_id_keys_dicts.keys():
-            print("\nWARNING: A user in the CSV does not have a manual 'User Record' in the reporting DB. This likely "
-                  "indicates they are a new user. They will be skipped for updating until they have a manual user "
-                  "record -- which we believe occurs when they are created in Elements, either manually or via an HR "
-                  "feed update.")
+
+        # Append the user's proprietary ID URL to the endpoint
+        # Send the http request
+        # Load response XML into Element Tree
+        req_url = api_creds['endpoint'] + "users?proprietary-id=" + user_dict['user_proprietary_id']
+        response = requests.get(req_url, auth=(api_creds['username'], api_creds['password']))
+        root = ET.fromstring(response.text)
+
+        # Locate the API object with the user ID
+        id_xpath = 'feed:entry/api:object'
+        user_id_element = root.find(id_xpath, ns)
+
+        # If the user doesn't have an Elements ID, warn, empty the dict, and continue
+        if user_id_element is None:
+            print("\nWARNING: A user in the CSV does not have a 'User ID' in Elements."
+                  "This likely indicates they are a new user. They will be skipped "
+                  "for now -- We believe the Elements User ID and manual record are "
+                  "created either manually or when a user's HR feed entry is imported.")
             print("user_proprietary_id:", user_dict['user_proprietary_id'])
             ud[index] = None
+            continue
 
-        else:
-            user_dict["user_record_id"] = prop_id_keys_dicts[user_dict["user_proprietary_id"]]["User Record ID"]
-            user_dict["user_id"] = prop_id_keys_dicts[user_dict["user_proprietary_id"]]["User ID"]
+        # Add the user ID to the dict. Note: this is a STRING.
+        user_dict['user_id'] = user_id_element.attrib['id']
 
-    cursor.close()
-    conn.close()
+        # Pause for the API.
+        sleep(0.25)
 
+    # Return the filtered set
+    return [user_dict for user_dict in ud if user_dict is not None]
+
+
+# -----------------------------
+def retrieve_user_record_ids(ud):
+    print("Getting User Record IDs...")
+
+    # Get the namespaces
+    ns = get_namespace_object()
+
+    # Loop the user update dicts
+    for index, user_dict in enumerate(ud, 0):
+
+        # Append the user ID to the endpoint URL
+        # Send the http request
+        # Load response XML into Element Tree
+        req_url = api_creds['endpoint'] + "users/" + user_dict['user_id']
+        response = requests.get(req_url, auth=(api_creds['username'], api_creds['password']))
+        root = ET.fromstring(response.text)
+
+        # Locate the URL element, get the User ID
+        record_id_xpath = 'feed:entry/api:object/api:records/api:record'
+        record_id_element = root.find(record_id_xpath, ns)
+        record_id = record_id_element.attrib['id-at-source']
+
+        # If the user doesn't have a manual record ID, something has gone wrong
+        if record_id is None:
+            print("\nWARNING: A user in the CSV does not have a 'Manual User Record' in Elements."
+                  "This likely indicates they are a new user. They will be skipped "
+                  "for now -- We believe the Elements User ID and manual record are "
+                  "created either manually or when a user's HR feed entry is imported.")
+            print("user_proprietary_id:", user_dict['user_proprietary_id'])
+            ud[index] = None
+            continue
+
+        # Add the record id to the user dict
+        user_dict['user_record_id'] = record_id
+
+        # Pause for the API.
+        sleep(0.25)
+
+    # Return the filtered set
     return [user_dict for user_dict in ud if user_dict is not None]
 
 
@@ -103,7 +139,6 @@ def create_xml_bodies(ud):
 
     # Main XML function
     for user_dict in ud:
-        # if "user_record_id" not in user_dict.keys(): continue
 
         # XML root <update-record> and child node <fields>
         root = ET.Element('update-record', xmlns="http://www.symplectic.co.uk/publications/api")
@@ -209,8 +244,10 @@ if ssh_tunnel_needed:
 # Convert the CSV to dict.
 updates_dict = convert_update_csv("Bulk_Profile_Test_2.csv")
 
-# Reporting DB: Add the user record IDs to the dict,
-# Filters for any users not yet in the system
+# Loop the dict, and ping the APIs for user IDs and user record IDs
+# These functions also strip any users who don't have these values
+# in the API. (Likely means they're new users.)
+updates_dict = retrieve_user_ids(updates_dict)
 updates_dict = retrieve_user_record_ids(updates_dict)
 
 # Adds the xml bodies for the update procedure
@@ -223,4 +260,4 @@ update_records_via_api(updates_dict)
 if ssh_tunnel_needed:
     server.stop()
 
-print("Program complete. Exiting.")
+print("\nProgram complete. Exiting.")
